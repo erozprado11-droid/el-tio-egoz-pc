@@ -1,9 +1,0 @@
-# Node
-node_modules/
-dist/
-out/
-.next/
-.env  # ¡Nunca subas tus credenciales de Firebase!
-.env.local
-.DS_Store
-*.log
