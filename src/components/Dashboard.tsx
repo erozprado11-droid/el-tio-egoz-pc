@@ -1,6 +1,9 @@
 import React from "react";
 
-export default function Dashboard(){
+interface DashboardProps {
+    onGameClick: () => void;
+}
+export default function Dashboard({ onGameClick }: DashboardProps){
     return(
     <>
     <main className="flex-1 bg-[#121214] rounded-xl border border-[#23283a] p-6 shadow-inner min-h-[500px]">
@@ -9,7 +12,7 @@ export default function Dashboard(){
         {/* Grid de ejemplo para las tarjetas de juegos */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
                 {[1, 2, 3, 4, 5, 6, 7, 8].map((item) => (
-                    <div key={item} className="bg-[#181c24] rounded-lg overflow-hidden border border-[#23283a] hover:border-[#ffb300] transition cursor-pointer group">
+                    <div onClick={onGameClick} key={item} className="bg-[#181c24] rounded-lg overflow-hidden border border-[#23283a] hover:border-[#ffb300] transition cursor-pointer group">
                         <div className="h-48 bg-[#23283a] w-full group-hover:opacity-80 transition flex items-center justify-center text-gray-600">
                             [Imagen Portada]
                         </div>
