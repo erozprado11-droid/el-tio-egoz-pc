@@ -2,11 +2,11 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { collection, getDocs } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { Item } from '../components/types/Item'; // Asegúrate de tener la ruta correcta
+import ImageSlider from '../utils/ImageSlider';
 
 const ITEMS_PER_PAGE = 24;
 
-// --- 1. COMPONENTES DE BADGES (Integrados aquí para mayor facilidad) ---
-
+// --- 1. COMPONENTES DE BADGES ---
 function PlatformBadge({ item }: { item: Item }) {
     const PLATFORMS_CONFIG = {
         Windows: {
@@ -17,6 +17,10 @@ function PlatformBadge({ item }: { item: Item }) {
             exists: item.linkAndroid && item.linkAndroid.trim() !== '',
             styles: "from-green-600/20 to-emerald-500/20 text-emerald-400 border-emerald-500/30 shadow-[0_0_10px_rgba(16,185,129,0.15)]",
         },
+        Mac: {
+            exists: item.linkMac && item.linkMac.trim() !== '',
+            styles: "from-gray-600/20 to-gray-400/20 text-gray-300 border-gray-500/30",
+        }
     };
 
     const activePlatforms = Object.entries(PLATFORMS_CONFIG).filter(([_, conf]) => conf.exists);
@@ -55,36 +59,48 @@ function StatusBadge({ status }: { status: string | undefined }) {
     );
 }
 
-
 // --- 2. COMPONENTE PRINCIPAL: DASHBOARD ---
-
-// Actualizamos la interfaz para recibir los filtros (¡Preparando el terreno para el Sidebar!)
 interface DashboardProps {
-    onGameClick: () => void; // Más adelante le pasaremos el ID: (id: string) => void
+    onGameClick: (item: Item) => void;
     filters?: { order: string; tags: string[]; platforms: string[]; query?: string };
 }
 
 export function Dashboard({ onGameClick, filters }: DashboardProps) {
     const [data, setData] = useState<Item[]>([]);
     const [loading, setLoading] = useState(true);
-    
-    // El estado de la página ahora vive aquí, ya no en la URL
     const [currentPage, setCurrentPage] = useState(1);
-
-    // Si los filtros cambian, regresamos a la página 1 automáticamente
-    useEffect(() => {
-        setCurrentPage(1);
-    }, [filters]);
 
     // 1. CARGAR DATOS DE FIREBASE
     useEffect(() => {
         async function fetchItems() {
             try {
                 const querySnapshot = await getDocs(collection(db, 'games'));
-                const items = querySnapshot.docs.map(doc => ({
-                    id: doc.id,
-                    ...doc.data()
-                })) as Item[];
+                const items = querySnapshot.docs.map(doc => {
+                    const data = doc.data();
+                    
+                    // LÓGICA SALVAVIDAS PARA LA FECHA:
+                    // Si es un Timestamp de Firebase, lo convertimos a string. Si no, usamos la fecha actual por defecto.
+                    let safeDate = new Date().toISOString(); 
+                    if (data.createdAt) {
+                        // Verifica si tiene la función toDate() de Firebase
+                        if (typeof data.createdAt.toDate === 'function') {
+                            safeDate = data.createdAt.toDate().toISOString();
+                        } else if (data.createdAt.seconds) {
+                            // Por si llega como objeto plano de segundos
+                            safeDate = new Date(data.createdAt.seconds * 1000).toISOString();
+                        } else {
+                            // Por si ya era un string
+                            safeDate = new Date(data.createdAt).toISOString();
+                        }
+                    }
+
+                    return {
+                        id: doc.id,
+                        ...data,
+                        createdAt: safeDate // <-- ¡Inyectamos la fecha ya curada!
+                    };
+                }) as Item[];
+                
                 setData(items);
             } catch (err) {
                 console.error('Error cargando la base de datos:', err);
@@ -95,11 +111,12 @@ export function Dashboard({ onGameClick, filters }: DashboardProps) {
         fetchItems();
     }, []);
 
-    // 2. LÓGICA DE FILTRADO Y ORDEN (Mantenida intacta, pero adaptada a los props)
+    // ========================================================
+    // LOGICA DE FILTRADO CORREGIDA
+    // ========================================================
     const filteredGames = useMemo(() => {
         let filtered = data;
 
-        // Búsqueda por texto (si la implementamos luego en el navbar)
         if (filters?.query) {
             filtered = filtered.filter(game => game.title.toLowerCase().includes(filters.query!.toLowerCase()));
         }
@@ -108,23 +125,37 @@ export function Dashboard({ onGameClick, filters }: DashboardProps) {
         const selectedPlatforms = filters?.platforms || [];
         const order = filters?.order || 'newest';
 
+        // 1. FILTRADO MULTI-PLATAFORMA
         if (selectedPlatforms.length > 0) {
             filtered = filtered.filter((game) => {
                 return selectedPlatforms.some((p) => {
-                    const linkKey = p === 'Windows' ? 'linkWindows' : 'linkAndroid';
-                    const link = game[linkKey as keyof Item];
+                    let linkKey: keyof Item;
+                    if (p.toLowerCase() === 'windows') linkKey = 'linkWindows';
+                    else if (p.toLowerCase() === 'mac') linkKey = 'linkMac';
+                    else linkKey = 'linkAndroid';
+
+                    const link = game[linkKey];
                     return typeof link === 'string' && link.trim() !== '';
                 });
             });
         }
 
+        // 2. FILTRADO DE TAGS (Busca en details y basicInformation de forma segura)
         if (selectedTags.length > 0) {
             filtered = filtered.filter((game) => {
-                const gameDetails = String(game.details || "").toLowerCase();
-                return selectedTags.every((tag) => gameDetails.includes(tag.toLowerCase()));
+                // Nos aseguramos de que sean arrays antes de unirlos, evitando errores de JavaScript
+                const detailsArray = Array.isArray(game.details) ? game.details : [];
+                const basicInfoArray = Array.isArray(game.basicInformation) ? game.basicInformation : [];
+                
+                // Convertimos todo a un solo bloque de texto en minúsculas
+                const searchableText = [...detailsArray, ...basicInfoArray].join(" ").toLowerCase();
+
+                // El juego debe tener TODAS las etiquetas seleccionadas
+                return selectedTags.every((tag) => searchableText.includes(tag.toLowerCase()));
             });
         }
 
+        // 3. ORDENAMIENTO (Más viejos / Más nuevos)
         return [...filtered].sort((a, b) => {
             const timeA = new Date(a.createdAt).getTime();
             const timeB = new Date(b.createdAt).getTime();
@@ -132,18 +163,15 @@ export function Dashboard({ onGameClick, filters }: DashboardProps) {
         });
     }, [data, filters]);
 
-    // 3. PAGINACIÓN
-    const totalPages = Math.ceil(filteredGames.length / ITEMS_PER_PAGE);
+    // PAGINACIÓN
+    const totalPages = Math.ceil(filteredGames.length / ITEMS_PER_PAGE) || 1;
     const gamesToShow = filteredGames.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
 
     const handlePageChange = (page: number) => {
         if (page >= 1 && page <= totalPages) {
             setCurrentPage(page);
-            // Scroll suave nativo para la ventana de Electron
             if (window.scrollY > 300) {
-                setTimeout(() => {
-                    window.scrollTo({ top: 0, behavior: 'smooth' });
-                }, 100);
+                setTimeout(() => { window.scrollTo({ top: 0, behavior: 'smooth' }); }, 100);
             }
         }
     };
@@ -170,10 +198,9 @@ export function Dashboard({ onGameClick, filters }: DashboardProps) {
     return (
         <div className='w-full min-h-screen contain-paint flex flex-col'>
             <div className='w-full'>
-                
                 <div className='grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 xl:gap-6'>
                     
-                    {/* SEÑUELO DE CARGA */}
+                    {/* CARGANDO */}
                     {loading && (
                         <div className='col-span-full bg-[#181c24] rounded-xl h-[400px] flex flex-col items-center justify-center border border-[#23283a] animate-pulse'>
                             <div className="w-12 h-12 border-4 border-[#ffb300]/20 border-t-[#ffb300] rounded-full animate-spin mb-4"></div>
@@ -181,7 +208,7 @@ export function Dashboard({ onGameClick, filters }: DashboardProps) {
                         </div>
                     )}
 
-                    {/* SEÑUELO SIN RESULTADOS */}
+                    {/* VACÍO */}
                     {!loading && filteredGames.length === 0 && (
                         <div className='col-span-full bg-[#181c24] rounded-xl h-[400px] flex flex-col overflow-hidden border border-dashed border-[#23283a] shadow-2xl relative'>
                             <div className="h-48 sm:h-56 bg-[#09090b] flex items-center justify-center">
@@ -198,27 +225,25 @@ export function Dashboard({ onGameClick, filters }: DashboardProps) {
                         </div>
                     )}
 
-                    {/* RENDERIZADO DE JUEGOS REALES */}
+                    {/* TARJETAS DE JUEGOS */}
                     {!loading && gamesToShow.map((item) => {
                         const statusKeywords = ["Finalizado", "Desarrollo", "Abandonado", "Desconocido"];
-                        const statusText = statusKeywords.find(keyword => 
-                            item.basicInformation?.some(infoLine => infoLine.includes(keyword))
-                        );
+                        const statusText = statusKeywords.find(keyword => {
+                            const combinedArrays = [...(item.basicInformation || []), ...(item.details || [])];
+                            return combinedArrays.some(infoLine => infoLine.includes(keyword));
+                        });
 
                         return (
                             <div 
                                 key={item.id} 
-                                onClick={onGameClick} 
+                                onClick={() => onGameClick(item)} 
                                 className='bg-[#181c24] cursor-pointer rounded-xl flex flex-col overflow-hidden shadow-lg hover:shadow-2xl transition-all duration-300 hover:-translate-y-1 border border-[#23283a] group'
                             >
-                                {/* Contenedor de Imagen (Reemplaza ImageSlider por ahora) */}
                                 <div className='h-48 sm:h-56 w-full bg-[#09090b] relative overflow-hidden'>
                                     {item.images && item.images.length > 0 ? (
-                                        <img 
-                                            src={item.images[0]} 
-                                            alt={item.title} 
-                                            className='w-full h-full object-cover group-hover:scale-110 transition-transform duration-500'
-                                        />
+                                        <div className='w-full relative overflow-hidden'>
+                                            <ImageSlider images={item.images} height="h-48 sm:h-56" />
+                                        </div>
                                     ) : (
                                         <div className="w-full h-full flex items-center justify-center text-gray-600 font-bold">Sin Portada</div>
                                     )}
@@ -241,12 +266,10 @@ export function Dashboard({ onGameClick, filters }: DashboardProps) {
                     })}
                 </div>
 
-                {/* PAGINADOR RESPONSIVO */}
+                {/* PAGINADOR */}
                 {totalPages > 1 && (
                     <div className='flex justify-center items-center mt-16 mb-10'>
                         <div className='flex items-center gap-1 sm:gap-2 p-1.5 bg-[#09090b]/60 backdrop-blur-xl border border-[#23283a] rounded-2xl shadow-2xl'>
-                            
-                            {/* Anterior */}
                             <button
                                 onClick={() => handlePageChange(currentPage - 1)}
                                 disabled={currentPage === 1}
@@ -257,7 +280,6 @@ export function Dashboard({ onGameClick, filters }: DashboardProps) {
                                 ← <span className='hidden sm:inline ml-1'>Anterior</span>
                             </button>
 
-                            {/* Números */}
                             <div className="flex items-center">
                                 {getPaginationNumbers().map((page, index) => (
                                     <button
@@ -267,7 +289,7 @@ export function Dashboard({ onGameClick, filters }: DashboardProps) {
                                         className={`w-8 h-8 sm:w-10 sm:h-10 rounded-lg sm:rounded-xl text-xs sm:text-sm font-bold transition-all duration-300 ${
                                             page === currentPage
                                                 ? 'bg-[#ffb300] text-black shadow-lg shadow-[#ffb300]/30 scale-110 z-10'
-                                                : page === '...' ? 'text-gray-600 cursor-default' : 'text-gray-400 hover:text-white hover:bg-white/5'
+                                                : page === '...' ? 'text-gray-600 cursor-default' : 'text-gray-400 hover:text-white hover:bg-[#181c24]'
                                         }`}
                                     >
                                         {page}
@@ -275,7 +297,6 @@ export function Dashboard({ onGameClick, filters }: DashboardProps) {
                                 ))}
                             </div>
 
-                            {/* Siguiente */}
                             <button
                                 onClick={() => handlePageChange(currentPage + 1)}
                                 disabled={currentPage === totalPages}
